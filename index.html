@@ -1,0 +1,253 @@
+import { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously } from 'firebase/auth';
+import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, orderBy } from 'firebase/firestore';
+import { Heart, Book, Sparkles, Plus, Trash2, Loader, WifiOff } from 'lucide-react';
+
+// Main App component
+const App = () => {
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
+  const [word, setWord] = useState('');
+  const [definition, setDefinition] = useState('');
+  const [partOfSpeech, setPartOfSpeech] = useState('');
+  const [wordsList, setWordsList] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isAddingWord, setIsAddingWord] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Initialize Firebase and authenticate
+  useEffect(() => {
+    try {
+      // Access global variables provided by the canvas environment.
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+      const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+      if (Object.keys(firebaseConfig).length === 0) {
+        throw new Error("Firebase config not available. Please check the environment setup.");
+      }
+
+      const app = initializeApp(firebaseConfig);
+      const firestoreDb = getFirestore(app);
+      const firebaseAuth = getAuth(app);
+      setDb(firestoreDb);
+      setAuth(firebaseAuth);
+
+      const unsubscribeAuth = firebaseAuth.onAuthStateChanged(async (user) => {
+        if (user) {
+          setUserId(user.uid);
+        } else {
+          // If no user is authenticated, sign in with the custom token or anonymously
+          try {
+            if (initialAuthToken) {
+              await signInWithCustomToken(firebaseAuth, initialAuthToken);
+            } else {
+              await signInAnonymously(firebaseAuth);
+            }
+          } catch (e) {
+            console.error("Authentication failed:", e);
+            setError("Authentication failed. Please check your internet connection.");
+          }
+        }
+        setIsAuthReady(true);
+      });
+      return () => unsubscribeAuth();
+    } catch (e) {
+      console.error("Firebase initialization failed:", e);
+      setError("Failed to initialize the app. Please try refreshing.");
+    }
+  }, []);
+
+  // Set up real-time listener for the word list
+  useEffect(() => {
+    if (db && isAuthReady) {
+      const q = collection(db, 'artifacts', typeof __app_id !== 'undefined' ? __app_id : 'default-app-id', 'public', 'data', 'words');
+      const unsubscribe = onSnapshot(q, (querySnapshot) => {
+        const words = [];
+        querySnapshot.forEach((doc) => {
+          const data = doc.data();
+          words.push({
+            id: doc.id,
+            word: data.word,
+            definition: data.definition,
+            partOfSpeech: data.partOfSpeech,
+            createdAt: data.createdAt?.toDate(),
+          });
+        });
+        // Sort words by creation time in descending order (newest first)
+        words.sort((a, b) => b.createdAt - a.createdAt);
+        setWordsList(words);
+        setIsLoading(false);
+      }, (err) => {
+        console.error("Firestore data listener failed:", err);
+        setError("Could not load vocabulary list. Check your connection.");
+        setIsLoading(false);
+      });
+
+      // Cleanup function to detach the listener when the component unmounts
+      return () => unsubscribe();
+    }
+  }, [db, isAuthReady]);
+
+  // Handle adding a new word to Firestore
+  const handleAddWord = async (e) => {
+    e.preventDefault();
+    if (word.trim() === '' || definition.trim() === '' || partOfSpeech.trim() === '') {
+      setError('Please fill out all fields.');
+      return;
+    }
+    setIsAddingWord(true);
+    setError(null);
+
+    const newWord = {
+      word: word.trim(),
+      definition: definition.trim(),
+      partOfSpeech: partOfSpeech.trim(),
+      createdAt: serverTimestamp(),
+    };
+
+    try {
+      const wordsCollectionRef = collection(db, 'artifacts', typeof __app_id !== 'undefined' ? __app_id : 'default-app-id', 'public', 'data', 'words');
+      await addDoc(wordsCollectionRef, newWord);
+
+      // Clear the form fields after successful submission
+      setWord('');
+      setDefinition('');
+      setPartOfSpeech('');
+    } catch (e) {
+      console.error("Error adding document: ", e);
+      setError('Failed to add word. Please try again.');
+    } finally {
+      setIsAddingWord(false);
+    }
+  };
+
+  if (isLoading || !isAuthReady) {
+    return (
+      <div className="flex justify-center items-center h-screen bg-gray-50">
+        <Loader className="animate-spin h-10 w-10 text-slate-500" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen text-center p-4 bg-gray-50">
+        <WifiOff className="h-12 w-12 text-red-500 mb-4" />
+        <p className="text-xl text-red-600 font-semibold mb-2">Connection Error</p>
+        <p className="text-gray-700">{error}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-200 text-gray-800 p-6 flex flex-col items-center font-sans">
+      <div className="max-w-4xl w-full">
+        <header className="text-center mb-10">
+          <h1 className="text-5xl font-extrabold text-slate-900 drop-shadow-sm mb-2 flex items-center justify-center">
+            <Book className="h-10 w-10 mr-4 text-slate-600" />
+            Collaborative Vocabulary Builder
+          </h1>
+          <p className="text-lg text-slate-600">
+            Add new words and definitions to a shared list.
+          </p>
+        </header>
+
+        {/* Word input form */}
+        <div className="bg-white rounded-3xl shadow-xl p-8 mb-10 border border-slate-200">
+          <form onSubmit={handleAddWord} className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="flex flex-col">
+                <label htmlFor="word" className="text-sm font-semibold text-gray-700 mb-1">Word</label>
+                <input
+                  id="word"
+                  type="text"
+                  value={word}
+                  onChange={(e) => setWord(e.target.value)}
+                  className="p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none transition-shadow"
+                  placeholder="e.g., Ephemeral"
+                />
+              </div>
+              <div className="flex flex-col">
+                <label htmlFor="definition" className="text-sm font-semibold text-gray-700 mb-1">Definition</label>
+                <input
+                  id="definition"
+                  type="text"
+                  value={definition}
+                  onChange={(e) => setDefinition(e.target.value)}
+                  className="p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none transition-shadow"
+                  placeholder="e.g., lasting for a very short time"
+                />
+              </div>
+              <div className="flex flex-col">
+                <label htmlFor="partOfSpeech" className="text-sm font-semibold text-gray-700 mb-1">Part of Speech</label>
+                <input
+                  id="partOfSpeech"
+                  type="text"
+                  value={partOfSpeech}
+                  onChange={(e) => setPartOfSpeech(e.target.value)}
+                  className="p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-slate-500 focus:border-transparent outline-none transition-shadow"
+                  placeholder="e.g., Adjective"
+                />
+              </div>
+            </div>
+            <button
+              type="submit"
+              disabled={isAddingWord}
+              className="w-full flex justify-center items-center py-3 px-6 bg-slate-600 text-white font-bold rounded-xl shadow-lg hover:bg-slate-700 transition-colors disabled:bg-slate-400 disabled:cursor-not-allowed"
+            >
+              {isAddingWord ? (
+                <>
+                  <Loader className="animate-spin h-5 w-5 mr-3" />
+                  Adding...
+                </>
+              ) : (
+                <>
+                  <Plus className="h-5 w-5 mr-2" />
+                  Add Word
+                </>
+              )}
+            </button>
+          </form>
+        </div>
+
+        {/* Vocabulary list */}
+        <div className="space-y-4">
+          <h2 className="text-3xl font-bold text-slate-800 mb-4 flex items-center">
+            <Sparkles className="h-7 w-7 mr-2 text-yellow-500" />
+            Shared Vocabulary List
+          </h2>
+          {wordsList.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              {wordsList.map((item) => (
+                <div key={item.id} className="bg-white rounded-2xl shadow-md p-6 border border-gray-200 transition-transform transform hover:scale-105">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-xl font-bold text-slate-900">
+                      {item.word}
+                    </h3>
+                    <span className="text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-1 rounded-full">
+                      {item.partOfSpeech}
+                    </span>
+                  </div>
+                  <p className="text-gray-600 leading-relaxed italic">
+                    {item.definition}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center text-gray-500 p-10 bg-white rounded-2xl shadow-inner border border-gray-200">
+              <p className="text-lg">The vocabulary list is currently empty. Add a word to get started!</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default App;
